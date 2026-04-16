@@ -1,10 +1,14 @@
 import { GetServerSideProps } from "next";
 import { getSession } from "next-auth/react";
 import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 import AdminLayout from "@/components/layouts/AdminLayout";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { AdminArticle, ArticlePayload } from "@/services/admin/types";
+import { Input, Textarea, ErrorAlert } from "@/components/ui/InputField";
+import { articleSchema, ArticleFormValues } from "@/lib/schemas";
+import { AdminArticle } from "@/services/admin/types";
 import {
   adminCreateArticle,
   adminDeleteArticle,
@@ -14,7 +18,6 @@ import {
 } from "@/services/admin/adminService";
 
 type Mode = "list" | "create" | "edit";
-const emptyForm: ArticlePayload = { title: "", summary: "", content: "", status: "draft" };
 
 interface Props {
   initialArticles: AdminArticle[];
@@ -24,14 +27,28 @@ interface Props {
 export default function AdminArticlesPage({ initialArticles, accessToken }: Props) {
   const [articles, setArticles] = useState<AdminArticle[]>(initialArticles);
   const [mode, setMode] = useState<Mode>("list");
-  const [form, setForm] = useState<ArticlePayload>(emptyForm);
   const [editId, setEditId] = useState<number | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [serverError, setServerError] = useState("");
+  const [listError, setListError] = useState("");
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   const published = articles.filter((a) => a.status === "published").length;
   const drafts = articles.filter((a) => a.status === "draft").length;
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    watch,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<ArticleFormValues>({
+    resolver: zodResolver(articleSchema),
+    defaultValues: { title: "", summary: "", content: "", status: "draft" },
+  });
+
+  const currentStatus = watch("status");
 
   async function fetchArticles() {
     const data = await adminGetArticles(accessToken);
@@ -39,54 +56,59 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
   }
 
   function openCreate() {
-    setForm(emptyForm);
+    reset({ title: "", summary: "", content: "", status: "draft" });
     setEditId(null);
-    setError("");
+    setServerError("");
     setMode("create");
   }
 
   async function openEdit(id: number) {
     try {
       const article = await adminGetArticle(id, accessToken);
-      setForm({
+      reset({
         title: article.title,
         summary: article.summary ?? "",
         content: article.content,
         status: article.status,
       });
       setEditId(id);
-      setError("");
+      setServerError("");
       setMode("edit");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to load article");
+      setListError(err instanceof Error ? err.message : "Failed to load article");
     }
   }
 
-  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+  function handleCancel() {
+    reset();
+    setServerError("");
+    setMode("list");
+  }
+
+  async function onSubmit(values: ArticleFormValues) {
+    setServerError("");
     try {
-      if (mode === "create") await adminCreateArticle(form, accessToken);
-      else if (mode === "edit" && editId !== null) await adminUpdateArticle(editId, form, accessToken);
+      if (mode === "create") {
+        await adminCreateArticle(values, accessToken);
+      } else if (mode === "edit" && editId !== null) {
+        await adminUpdateArticle(editId, values, accessToken);
+      }
       await fetchArticles();
       setMode("list");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to save article");
-    } finally {
-      setLoading(false);
+      setServerError(err instanceof Error ? err.message : "Failed to save article");
     }
   }
 
   async function handleDelete(id: number) {
-    setLoading(true);
+    setDeleteLoading(true);
     try {
       await adminDeleteArticle(id, accessToken);
       await fetchArticles();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to delete article");
+      setListError(err instanceof Error ? err.message : "Failed to delete article");
     } finally {
-      setLoading(false);
+      setDeleteLoading(false);
       setDeleteConfirm(null);
     }
   }
@@ -99,7 +121,7 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
           {/* Page header */}
           <div className="flex items-center gap-3 mb-6">
             <button
-              onClick={() => setMode("list")}
+              onClick={handleCancel}
               className="w-8 h-8 flex items-center justify-center rounded-lg border border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 transition-all"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -111,57 +133,40 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
                 {mode === "create" ? "New Article" : "Edit Article"}
               </h1>
               <p className="text-xs text-slate-400 mt-0.5">
-                {mode === "create" ? "Fill in the details below to create a new article." : "Update the fields you want to change."}
+                {mode === "create"
+                  ? "Fill in the details below to create a new article."
+                  : "Update the fields you want to change."}
               </p>
             </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+          <form onSubmit={handleSubmit(onSubmit)} noValidate className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
             <div className="p-6 space-y-5">
-              {/* Title */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Title <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={form.title}
-                  onChange={(e) => setForm({ ...form, title: e.target.value })}
-                  required
-                  className="w-full border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                  placeholder="e.g. Getting Started with Next.js"
-                />
-              </div>
+              <Input
+                label="Title"
+                required
+                placeholder="e.g. Getting Started with Next.js"
+                error={errors.title?.message}
+                {...register("title")}
+              />
 
-              {/* Summary */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Summary
-                  <span className="ml-1.5 text-xs font-normal text-slate-400">optional</span>
-                </label>
-                <input
-                  type="text"
-                  value={form.summary ?? ""}
-                  onChange={(e) => setForm({ ...form, summary: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
-                  placeholder="A short description shown on the listing page"
-                />
-              </div>
+              <Input
+                label="Summary"
+                hint="(optional)"
+                placeholder="A short description shown on the listing page"
+                error={errors.summary?.message}
+                {...register("summary")}
+              />
 
-              {/* Content */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Content <span className="text-red-400">*</span>
-                </label>
-                <textarea
-                  value={form.content}
-                  onChange={(e) => setForm({ ...form, content: e.target.value })}
-                  required
-                  rows={12}
-                  className="w-full border border-slate-300 rounded-lg px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition resize-y font-mono"
-                  placeholder="Write your article content here..."
-                />
-              </div>
+              <Textarea
+                label="Content"
+                required
+                rows={12}
+                placeholder="Write your article content here..."
+                error={errors.content?.message}
+                className="font-mono"
+                {...register("content")}
+              />
 
               {/* Status */}
               <div>
@@ -171,7 +176,7 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
                     <label
                       key={s}
                       className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer transition-all text-sm font-medium select-none ${
-                        form.status === s
+                        currentStatus === s
                           ? s === "published"
                             ? "border-emerald-300 bg-emerald-50 text-emerald-700 shadow-sm"
                             : "border-amber-300 bg-amber-50 text-amber-700 shadow-sm"
@@ -181,16 +186,19 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
                       <input
                         type="radio"
                         className="sr-only"
-                        name="status"
                         value={s}
-                        checked={form.status === s}
-                        onChange={() => setForm({ ...form, status: s })}
+                        checked={currentStatus === s}
+                        onChange={() => setValue("status", s)}
                       />
-                      <span className={`w-2 h-2 rounded-full ${
-                        form.status === s
-                          ? s === "published" ? "bg-emerald-500" : "bg-amber-500"
-                          : "bg-slate-300"
-                      }`} />
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          currentStatus === s
+                            ? s === "published"
+                              ? "bg-emerald-500"
+                              : "bg-amber-500"
+                            : "bg-slate-300"
+                        }`}
+                      />
                       {s === "published" ? "Published" : "Draft"}
                     </label>
                   ))}
@@ -198,22 +206,18 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
               </div>
             </div>
 
-            {/* Error */}
-            {error && (
-              <div className="mx-6 mb-4 flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3.5 py-2.5">
-                <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-                {error}
+            {serverError && (
+              <div className="mx-6 mb-4">
+                <ErrorAlert message={serverError} />
               </div>
             )}
 
             {/* Footer actions */}
             <div className="px-6 py-4 bg-slate-50 border-t border-slate-200 flex items-center gap-2.5">
-              <Button type="submit" disabled={loading}>
-                {loading ? "Saving..." : mode === "create" ? "Create Article" : "Save Changes"}
+              <Button type="submit" disabled={isSubmitting}>
+                {isSubmitting ? "Saving..." : mode === "create" ? "Create Article" : "Save Changes"}
               </Button>
-              <Button type="button" variant="secondary" onClick={() => setMode("list")}>
+              <Button type="button" variant="secondary" onClick={handleCancel}>
                 Cancel
               </Button>
             </div>
@@ -254,13 +258,9 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
         ))}
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3 mb-4">
-          <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-          </svg>
-          {error}
+      {listError && (
+        <div className="mb-4">
+          <ErrorAlert message={listError} />
         </div>
       )}
 
@@ -301,7 +301,7 @@ export default function AdminArticlesPage({ initialArticles, accessToken }: Prop
                     </Button>
                     {deleteConfirm === a.id ? (
                       <>
-                        <Button variant="danger" size="sm" disabled={loading} onClick={() => handleDelete(a.id)}>
+                        <Button variant="danger" size="sm" disabled={deleteLoading} onClick={() => handleDelete(a.id)}>
                           Confirm
                         </Button>
                         <Button variant="ghost" size="sm" onClick={() => setDeleteConfirm(null)}>
